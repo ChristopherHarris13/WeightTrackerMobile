@@ -5,7 +5,6 @@
     <uses-permission android:name="android.permission.SEND_SMS" />
 
     <application
-        android:name=".WeightTrackerApp"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -14,9 +13,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.WeightTracker">
-
         <activity
-            android:name=".ui.login.LoginActivity"
+            android:name=".MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -26,7 +24,7 @@
         </activity>
 
         <activity
-            android:name=".ui.dashboard.DashboardActivity"
+            android:name=".DashboardActivity"
             android:exported="false" />
     </application>
 
