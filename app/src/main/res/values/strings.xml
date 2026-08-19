@@ -1,3 +1,66 @@
 <resources>
     <string name="app_name">WeightTracker</string>
+
+    <!-- Login screen -->
+    <string name="login_title">Weight Tracker Login</string>
+    <string name="hint_username">Username</string>
+    <string name="hint_password">Password</string>
+    <string name="action_login">Login</string>
+    <string name="action_register">Register</string>
+    <string name="registered_success">Registered! You can log in now.</string>
+
+    <!-- Dashboard -->
+    <string name="welcome_format">Welcome, %1$s</string>
+    <string name="summary_format">Latest: %1$s    Goal: %2$s</string>
+    <string name="hint_date">YYYY-MM-DD</string>
+    <string name="hint_weight">Weight</string>
+    <string name="hint_goal">Goal Weight</string>
+    <string name="hint_phone">SMS Phone (optional)</string>
+    <string name="action_add">Add</string>
+    <string name="action_save_goal">Save Goal</string>
+    <string name="action_enable_sms">Enable SMS Alerts</string>
+    <string name="list_instructions">Tap a row to edit, long-press to delete.</string>
+
+    <!-- Edit / delete -->
+    <string name="dialog_edit_title">Edit Weight</string>
+    <string name="dialog_delete_title">Delete entry?</string>
+    <string name="dialog_delete_message">%1$s on %2$s will be permanently removed.</string>
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+
+    <!-- Transient feedback -->
+    <string name="entry_added">Added</string>
+    <string name="entry_updated">Updated</string>
+    <string name="entry_deleted">Deleted</string>
+    <string name="goal_saved">Goal saved</string>
+    <string name="sms_sent">SMS sent</string>
+    <string name="sms_goal_reached">Congrats! You reached your goal weight %1$s (current: %2$s).</string>
+    <string name="sms_failed">Failed to send SMS: %1$s</string>
+    <string name="sms_permission_granted">SMS permission already granted.</string>
+    <string name="sms_permission_denied">SMS permission denied. The app continues without SMS.</string>
+    <string name="sms_needs_permission">Grant SMS permission to send goal alerts.</string>
+
+    <!--
+        User-facing wording for every AppError constant.
+
+        These live here, in the UI layer, precisely so the domain package can stay free of both
+        `R` and English. AppError names a fact; this file decides how to say it.
+    -->
+    <string name="error_empty_username">Please enter a username.</string>
+    <string name="error_username_too_short">Username must be at least 3 characters.</string>
+    <string name="error_empty_password">Please enter a password.</string>
+    <string name="error_password_too_short">Password must be at least 6 characters.</string>
+    <string name="error_username_taken">That username is already taken.</string>
+    <string name="error_invalid_credentials">Invalid credentials. Register if you\'re new.</string>
+    <string name="error_empty_date">Please enter a date.</string>
+    <string name="error_invalid_date_format">Date must look like 2026-08-19.</string>
+    <string name="error_impossible_date">That date doesn\'t exist on the calendar.</string>
+    <string name="error_empty_weight">Please enter a weight.</string>
+    <string name="error_invalid_weight">Weight must be a number, e.g. 185.5</string>
+    <string name="error_weight_out_of_range">Weight must be between 0 and 1500.</string>
+    <string name="error_empty_goal">Please enter a goal weight.</string>
+    <string name="error_invalid_goal">Goal must be a number, e.g. 175.0</string>
+    <string name="error_goal_out_of_range">Goal must be between 0 and 1500.</string>
+    <string name="error_storage_failure">Couldn\'t save. Please try again.</string>
 </resources>

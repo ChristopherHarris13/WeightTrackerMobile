@@ -14,8 +14,9 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.WeightTracker">
+
         <activity
-            android:name=".MainActivity"
+            android:name=".ui.login.LoginActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -25,7 +26,7 @@
         </activity>
 
         <activity
-            android:name=".DashboardActivity"
+            android:name=".ui.dashboard.DashboardActivity"
             android:exported="false" />
     </application>
 
