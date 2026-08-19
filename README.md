@@ -1,240 +1,191 @@
-# WeightTracker — CS-360
+# WeightTracker
 
-A daily weight tracking app for Android, rewritten from an activity-centric design into a
-layered MVVM architecture.
+A small Android app for logging your weight each day, setting a goal, and getting a text message
+when you hit it.
 
-The original submission is preserved verbatim under [`original/`](original/) for side-by-side
-comparison. This document explains what changed and, more importantly, **why** — the reasoning
-is the point of the exercise, not the line count.
+It works. It worked before, too — but the way it was built made it hard to change and impossible
+to test. This rewrite is about the *how*, not the *what*. The features are the same; the
+structure underneath them is entirely different.
+
+The original code is preserved in [`original/`](original/) so you can read the two side by side.
 
 ---
 
-## Before and after
+## What was wrong with the old version
+
+Nothing you'd notice using it. Everything you'd notice trying to work on it.
+
+All five source files were Activities or things Activities poked at directly. `MainActivity`
+held a database helper. `DashboardActivity` held the same one. So did `WeightAdapter` — the class
+whose only job is drawing rows on screen was also running `DELETE` statements. Every database
+call happened on the main thread. Passwords were stored as plain text.
+
+The part that bothered me most was subtler: after every write, the code had to remember to call
+`refresh()` and `refreshSummary()` by hand. That's cache invalidation, and doing it manually
+means eventually forgetting it somewhere.
+
+There were also no real tests. The two test files were the ones Android Studio generates for you,
+and one of them asserts that `2 + 2 == 4`.
+
+---
+
+## What it looks like now
 
 ```
-BEFORE                                    AFTER
-
-MainActivity ──▶ DBHelper                 LoginActivity ─observes─▶ LoginViewModel
-    │            (raw SQL,                                              │
-    │             main thread,                                          ▼
-    │             plaintext passwords)                          UserRepository
-    │                                                                   │
-DashboardActivity ──▶ DBHelper                                          ▼
-    │                                                          UserDao (Room)
-    └──▶ WeightAdapter ──▶ DBHelper
-              ▲                            DashboardActivity ─observes─▶ DashboardViewModel
-              └── the adapter wrote                                          │
-                  to the database                                            ▼
-                                                                    WeightRepository
-                                                                             │
-5 files, 0 real tests                                                        ▼
-                                                              WeightDao / GoalDao (Room)
-
-                                          33 files, 96 unit tests
+Activity  ──observes──▶  ViewModel  ──calls──▶  Repository  ──▶  Room DAO
+   │                         │                      │
+platform stuff          business rules         persistence
+(views, dialogs,        (validation,           (SQL, threading)
+ permissions)            orchestration)
 ```
+
+Four layers, each with one job. The Activity does the things that genuinely need an Activity.
+The ViewModel holds state and decides what things mean. The Repository owns the data. Room
+handles SQL.
+
+There's also a `domain` package that has **zero Android imports** — pure Java, all of it
+testable on a plain JVM in about a second. That constraint turned out to drive most of the good
+decisions in this project.
 
 | | Before | After |
 |---|---|---|
-| Persistence | Hand-written SQL, raw `Cursor` | Room, typed DAOs, `LiveData` queries |
-| Threading | Everything on the main thread | Explicit `AppExecutors` (io / main) |
-| Passwords | Plaintext | Salted PBKDF2, 120,000 iterations |
-| List updates | Manual `swapCursor` + `refreshSummary` | Automatic — Room re-emits on write |
-| Errors | `Toast` calls and `-1` sentinels | Typed `Result<T>` + `AppError` enum |
-| Dependencies | `new DBHelper(this)` inside Activities | Constructor injection via `AppContainer` |
-| Tests | 2 template stubs | 96 tests, no emulator required |
-
-The layering rule: **each layer has one job.** The Activity handles platform concerns
-(views, permissions, dialogs). The ViewModel holds state and applies business rules. The
-Repository owns data and hides persistence. The `domain` package is pure Java with zero
-`android.*` imports.
+| Database | Hand-written SQL, raw `Cursor` | Room with typed DAOs |
+| Threading | All on the main thread | Explicit background/main executors |
+| Passwords | Plain text | Salted PBKDF2, 120,000 iterations |
+| Refreshing the list | Manual, after every write | Automatic — Room re-emits on change |
+| Errors | Toasts and `-1` return codes | A `Result` type with named errors |
+| Tests | 2 generated stubs | 96 real ones |
 
 ---
 
-## Design decisions worth explaining
+## Decisions I'd want to explain in a code review
 
-### Validation lives in two places, and there is a rule for which
+### Splitting the SMS feature three ways
 
-> *Validation that needs no I/O is a pure function called by the ViewModel.
-> Validation that requires the datastore lives in the Repository.*
+Sending a congratulations text sounds like one feature. It's actually three things that belong in
+three different places:
 
-That single sentence decides every case. Whether a weight parses is answerable from the string
-alone → `WeightValidator`. Whether a username is taken is answerable only by the UNIQUE index →
-`UserRepository`. Ask "what does this check need in order to run?" and the answer places it.
+- **Deciding** whether to send — is the weight at or under goal, is there a phone number? That's
+  a business rule with no Android in it.
+- **Checking** whether we're allowed to send — that's platform state, and only an Activity knows.
+- **Actually sending** — also platform.
 
-### `Double.parseDouble` is not validation
+So the ViewModel does only the first one, and it emits a *request*, not a command: "this person
+hit their goal, here's the number." The Activity decides whether it can act.
 
-`Double.parseDouble("183f")` returns `183.0`. It also accepts `"NaN"`, `"Infinity"`, and hex
-float literals. A `try/catch` around it — which is what most code does — lets all of those
-through. `WeightValidator` checks the shape with a regex *before* parsing, then range-checks the
-result. Each of those cases has a test.
+A consequence that felt wrong at first: **the ViewModel never finds out whether the message
+actually sent.** I wanted to return a boolean. But delivery genuinely isn't the ViewModel's
+business, and wanting that boolean was me not trusting the boundary I'd just drawn.
 
-Relatedly, `validateDate` is not cosmetic. Entries are sorted with `ORDER BY date_text DESC`, a
-lexicographic sort over text, which coincides with chronological order **only** while every
-string is zero-padded ISO-8601. Let `2026-8-5` through and it sorts after `2026-12-01`, silently
-and permanently. **The sort's correctness depends on a format invariant, so enforcing the format
-is a data-integrity concern.**
+The rule itself lives in `GoalPolicy`, which exists for an unglamorous reason: I wanted to test
+what happens when your weight *exactly equals* your goal, and I couldn't test that while it was
+buried inside an Activity. Pulling it out made it a six-line function with seven tests. Trying to
+make something testable showed me a seam that should have been there anyway.
 
-### The SMS feature, split three ways
+### The rotation bug
 
-Sending a goal-reached text involves three different kinds of work, and they belong in three
-different places:
+This is my favourite thing in the project.
 
-1. **The decision** — is the latest weight at or under goal, and is there a phone number?
-   Pure business logic → `domain/GoalPolicy`.
-2. **The capability check** — do we hold `SEND_SMS`? Platform state → the Activity.
-3. **The effect** — send it, show a Toast. Platform → `ui/SmsNotifier`.
+`LiveData` re-sends its most recent value to any new observer. That's exactly right for "the
+current list of weights." It's exactly wrong for "send a text message now" — because rotating
+your phone destroys and recreates the Activity, which re-subscribes, which receives the old value
+again, and sends a second text. Rotate five times, send five texts. It costs the user real money.
 
-The ViewModel owns only (1), and emits a **request** rather than a command. A direct consequence:
-**the ViewModel never learns whether the SMS was actually sent.** That is correct — delivery is
-not its business — and the urge to "just return a boolean" is the instinct this design trains
-away.
+The fix is a small wrapper called `Event` that lets its contents be read once and then returns
+null forever after. There's a better-known class for this called `SingleLiveEvent`, but it
+achieves the same thing by quietly breaking the `LiveData` contract — with two observers attached,
+one of them randomly never fires. Google deprecated it. `Event` leaves delivery alone and puts
+the "has this been handled?" question on the data itself, where you can see it at the call site.
 
-`GoalPolicy` exists because of a question: *how do I test the boundary case where the latest
-weight exactly equals the goal?* Inside a ViewModel that requires `InstantTaskExecutorRule`, a
-dependency this project does without. Extracting the rule made it testable in six lines.
-**The pressure to make something testable revealed a seam worth having anyway.**
+I verified it on the emulator: trigger the SMS, rotate four times, nothing else sends.
 
-### `Event<T>` and the duplicate-SMS bug
+### Passwords, and an API level that got in the way
 
-`LiveData` is a state holder, not an event stream: it re-delivers its latest value to every newly
-attached observer. Perfect for "the current list of weights", wrong for "send an SMS now". Rotate
-the device after hitting your goal and the Activity is recreated, re-subscribes, receives the
-stale value, and sends a second text. Rotate five times, send five texts.
+The obvious algorithm is PBKDF2 with SHA-256. Android only guarantees it from API 26, and this
+app supports 24. So the code asks the platform whether it has SHA-256 and falls back to SHA-1 if
+not — asking the real question rather than checking a version number as a proxy for it.
 
-`SingleLiveEvent` is the usual fix. It works, but it quietly breaks the `LiveData` contract —
-attach two observers and one nondeterministically never fires. Google deprecated it for that
-reason. Its failure mode is remote and silent.
-
-`Event<T>` instead puts consumed-ness in the **data**, leaving delivery alone. Every observer
-still receives every emission, exactly as promised; the *content* can only be taken once. Its
-failure mode is local and visible, and it has no Android imports so it is unit-testable.
-**The pattern that is easier to test is also the semantically honest one — that correlation is
-not a coincidence.**
-
-Verified on device: after the SMS fires, rotating four times sends nothing further.
-
-### Password hashing under `minSdk 24`
-
-`PBKDF2WithHmacSHA256` is only guaranteed from API 26; API 24–25 has only the SHA-1 variant. The
-code **probes the provider** and falls back on `NoSuchAlgorithmException` rather than branching on
-`Build.VERSION.SDK_INT` — it asks the question actually being asked, and keeps the class free of
-`android.*`.
-
-The stored value is self-describing:
+That fallback creates a problem: a password hashed on an old phone has to still work after the
+user upgrades. So the stored value describes itself:
 
 ```
-pbkdf2$PBKDF2WithHmacSHA256$120000$5e4ef53ec0a481f3...$3fca12533ba33acc191ed976...
+pbkdf2$PBKDF2WithHmacSHA256$120000$5e4ef53ec0a481f3...$3fca12533ba33acc...
 ```
 
-Verification reads the algorithm and iteration count **out of the stored string**, not from
-current defaults. So a hash written on an API 24 device still verifies after the user upgrades,
-and the iteration count can be raised later without invalidating any account. **Parameters travel
-with the data** — the same reasoning behind bcrypt's `$2b$` prefix.
+Verification reads the algorithm and iteration count out of that string instead of assuming
+today's defaults. Same trick bcrypt uses. It also means I can raise the iteration count later
+without locking anyone out — the parameters travel with the data.
 
-*The tradeoff:* on API 24–25 the PRF is HMAC-SHA-1. Weaker in principle, not practically broken —
-SHA-1's published weaknesses are *collision* attacks, while PBKDF2 relies on preimage/PRF
-properties with no practical break. The alternatives were raising `minSdk` to 26 (dropping real
-devices) or bundling third-party crypto (a new dependency, and rolling your own is exactly what
-not to do).
+Small thing I'm pleased about: the encoding is hex rather than base64, because Android's base64
+throws in unit tests and Java's isn't available on API 24. Ten lines of hex works everywhere,
+keeps the class free of Android imports, and you can read the salt with your own eyes in Device
+Explorer.
 
-*Why hex and not base64:* `android.util.Base64` throws in JVM unit tests; `java.util.Base64` is
-API 26+ on Android and would crash on precisely the devices the SHA-1 fallback exists for. Hex
-costs ten lines, works everywhere, and is readable by eye in Device Explorer.
+### A bug I created by fixing a different one
 
-### A bug the rewrite itself introduced
+Moving the database off the main thread is unambiguously correct. It also introduced a bug.
 
-In the original, `db.loginUserId()` blocked the main thread, so the UI was *physically* unable to
-respond to a second tap while a query ran. Now that hashing takes 200 ms+ on a background thread,
-the buttons stay live — and a double-tap fires two registrations.
+In the old version, logging in blocked the main thread, so the UI was physically frozen and you
+*couldn't* tap the button twice. That was never a design decision — it was an accident of doing
+something slow in the wrong place. Once hashing moved to a background thread, the buttons stayed
+responsive, and a double-tap would register you twice.
 
-**Moving work off the main thread removed an accidental safeguard.** The replacement has to be
-deliberate: `LoginViewModel.isBusy()` guards at the ViewModel, and the Activity disables the
-buttons. Worth noticing that making an app more correct in one dimension can open a hazard in
-another.
+So there's now a `busy` flag that guards both ends. The lesson I took from it: making software
+better along one axis can quietly remove a safeguard you didn't know you were relying on.
 
-### Why the database file was renamed
+### Where validation lives
 
-Pointing Room at the legacy `weighttracker.db` at version 1 throws. The file has no
-`room_master_table`, so `checkIdentity()` validates the live schema directly, finds `password`
-where `password_hash` is declared, and fails.
+One rule settled every case: **if a check needs no I/O, it's a pure function; if it needs the
+database, it belongs in the repository.**
 
-**`fallbackToDestructiveMigration()` does not catch this** — it only affects `onUpgrade`, which
-never runs when the version numbers already agree. That is the surprising part: the option that
-sounds like "wipe it if anything is wrong" does nothing here.
+"Is this a valid weight?" — answerable from the string alone. Pure function. "Is this username
+taken?" — only the database knows. Repository.
 
-Declaring `version = 2` on the old filename *would* work, by forcing `onUpgrade` to run first.
-Understanding why is the transferable part. A new filename was chosen instead because it needs no
-such reasoning, and because it is the honest description: passwords are now salted hashes, so
-every legacy row was unusable regardless. This genuinely is a new datastore.
-
-### Smaller decisions
-
-- **`OnConflictStrategy.IGNORE`** on user insert returns `-1` on a duplicate instead of throwing.
-  Race-free (the index is the single source of truth, unlike check-then-insert), and the
-  repository translates `-1` into a domain error at the layer boundary.
-- **Login returns an identical error** for "no such user" and "wrong password". Distinguishing
-  them is friendlier but hands an attacker a username-enumeration oracle. Pinned by a test, so a
-  future "UX improvement" fails the build rather than quietly regressing security.
-- **Immutable entities** — `DiffUtil` requires that already-submitted items are never mutated.
-  Immutability guarantees that by construction rather than by everyone remembering.
-- **`, id DESC` tiebreaker** — the original left same-date entries in unspecified order, which
-  `DiffUtil` would render as rows visibly swapping for no reason.
-- **Usernames are lowercased.** The original treated `Chris` and `chris` as different accounts.
-- **Hand-written fakes, not Mockito.** Writing `FakeUserDao` forces the DAO's real contract to be
-  articulated. **A fake is executable documentation of a contract; a mock is an assertion about a
-  method call.**
+Worth knowing: `Double.parseDouble("183f")` returns `183.0` without complaint. It also accepts
+`"NaN"` and `"Infinity"`. A `try/catch` around it isn't validation — you have to check the shape
+first. There's a test for each of those.
 
 ---
 
-## Defects fixed
+## Things I deliberately didn't build
 
-| # | Defect | Where it was |
-|---|---|---|
-| 1 | Weight field never cleared after Add — `185.5` then `183.0` stored `185.51830` | `DashboardActivity` |
-| 2 | `if (userId <= 0) finish();` missing `return`, so `onCreate` continued with an invalid id | `DashboardActivity:37` |
-| 3 | `recyclerview` used but only resolved transitively via Material | `app/build.gradle` |
-| 4 | Weights rendered at raw float precision (`185.5183`) | `WeightAdapter` |
-| 5 | `SmsManager.getDefault()` deprecated | `SmsUtil` |
-| 6 | Long-press deleted immediately, no confirmation, no undo | `WeightAdapter` |
-| 7 | `ORDER BY date_text DESC` with no tiebreaker | `DBHelper` |
-| — | Stale `position` captured in `onBindViewHolder` could edit the wrong row | `WeightAdapter` |
+Knowing when to stop is part of this.
 
-Not in the original submission but fixed before this work began: `AndroidManifest.xml` declared
-neither `DashboardActivity` nor `SEND_SMS`, so the app crashed with `ActivityNotFoundException`
-the moment Login was pressed. Committed separately as `c8c7134`.
-
----
-
-## Deliberately not built
-
-Knowing where to stop is part of the design. Each of these was considered and declined:
-
-- **Immutable `UiState`** — a single state object per screen instead of several `LiveData`
-  streams. Genuinely better for complex screens; here it would add Java boilerplate without
-  preventing a bug this app can actually have.
-- **`SavedStateHandle`** — would supply `userId` automatically and survive process death. Skipped
-  because it hides wiring behind a magic string key, and more decisively because this app has no
-  session persistence at all: killing the process returns you to login regardless. Making
-  `userId` survive process death in an app whose *session* does not would be solving half a
-  problem.
-- **Hilt / Dagger** — solves a problem this app does not have. The entire object graph is nine
-  legible lines in `AppContainer`. Knowing *where* that trade flips is the useful part.
-- **`java.time`** — nicer than `SimpleDateFormat`, but needs core library desugaring plus
-  `desugar_jdk_libs` for marginal benefit across two date operations.
-- **Login timing equalisation** — hashing a dummy password when no user is found would close a
-  real timing side channel. Three lines. Skipped because a local-only SQLite app with no network
-  surface has no attacker positioned to measure it. If this ever grows a remote API, it is the
-  first thing to revisit.
-- **ViewModel unit tests** — they touch `LiveData` on every path, which needs
-  `androidx.arch.core:core-testing`. This costs almost nothing *because the design already pushed
-  the logic out of them*. The ViewModels are thin because they had to be testable-by-proxy, and
-  the low value of a ViewModel test is evidence the extraction worked.
+- **Hilt or Dagger.** The entire object graph is nine readable lines in one file. Adding a
+  dependency-injection framework would solve a problem this app doesn't have yet.
+- **`SavedStateHandle`.** It would let `userId` survive the process being killed — but the app has
+  no session persistence at all, so you'd land back at the login screen anyway. Solving half a
+  problem is worse than leaving it visible.
+- **Timing-equalised login.** Right now an unknown username fails faster than a wrong password,
+  which is technically a side channel. Three lines to fix. Skipped because there's no network and
+  no attacker who could measure it — but it's the first thing I'd revisit if this ever got an API.
+- **ViewModel unit tests.** They'd need an extra test dependency, and they'd assert almost
+  nothing, because all the logic already moved out into classes that *are* tested. The fact that
+  a ViewModel test would be boring is evidence the extraction worked.
 
 ---
 
-## Building and testing
+## Bugs fixed along the way
 
-Requires **JDK 21** — AGP 8.13 rejects newer JDKs:
+1. The weight field never cleared after adding an entry — type `185.5` then `183.0` and it stored
+   `185.51830`.
+2. `if (userId <= 0) finish();` was missing its `return`, so the code kept running with an
+   invalid user.
+3. RecyclerView was used but never declared as a dependency; it only worked by accident.
+4. Weights displayed at raw float precision (`185.5183`).
+5. `SmsManager.getDefault()` was deprecated.
+6. Long-press deleted a row instantly — no confirmation, no undo.
+7. Entries on the same date had no defined sort order, so the list could reshuffle on its own.
+
+Separately, the manifest was missing both `DashboardActivity` and the `SEND_SMS` permission,
+which crashed the app the instant you pressed Login. That's fixed in commit `c8c7134`, before any
+of this work started.
+
+---
+
+## Running it
+
+Needs JDK 21 — the Android Gradle Plugin rejects newer versions.
 
 ```bash
 export JAVA_HOME="C:/Program Files/Android/Android Studio/jbr"
@@ -242,31 +193,10 @@ export JAVA_HOME="C:/Program Files/Android/Android Studio/jbr"
 ./gradlew assembleDebug
 ```
 
-The unit tests run entirely on the JVM. That is not incidental: `domain/`, `ui/Event`,
-`data/security/`, `util/WeightFormatter`, and both repositories have no `android.*` dependencies,
-and `AppExecutors` takes its executors as constructor parameters so tests can pass
-`Runnable::run` and make everything synchronous.
+The tests run in seconds without a device, which is the whole payoff for the layering. The one
+honest gap: the fake database objects hand back `LiveData` they never update, so the tests cover
+writes rather than the observing. That part is verified by running the app.
 
-| Suite | Tests |
-|---|---|
-| `WeightValidatorTest` | 28 |
-| `Pbkdf2PasswordHasherTest` | 15 |
-| `CredentialsValidatorTest` | 12 |
-| `WeightRepositoryTest` | 12 |
-| `UserRepositoryTest` | 8 |
-| `GoalPolicyTest` | 7 |
-| `WeightFormatterTest` | 6 |
-| `ResultTest` / `EventTest` | 8 |
-
-**Known gap, stated rather than papered over:** the fake DAOs return `LiveData` they never mutate,
-because `setValue` asserts the main thread and would throw in a JVM test. Repository tests
-exercise command paths only; observation correctness is verified by running the app.
-
-### Verified on device
-
-Emulator, API 36. Register → login → add / edit / delete → goal → SMS → force-stop → re-login.
-Zero `FATAL EXCEPTION` across the entire walk.
-
-The one to reproduce: set a goal and phone, add a weight at or under goal so the SMS fires, then
-**rotate the device several times.** No second message is sent. That is the whole justification
-for `Event<T>`, in one observable behaviour.
+If you want to see the interesting behaviour yourself: set a goal and a phone number, log a
+weight at or under it so the text fires — then rotate the phone a few times. Nothing sends again.
+That's the whole reason `Event` exists, in one thing you can watch happen.
